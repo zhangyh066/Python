@@ -463,7 +463,6 @@ print(model_Rmbusdself.summary())
 
 
 # 样本外预测
-
 # 使用汇率预测市场收益率
 data = reg_data['2000-01':'2024-12'].copy()
 data = data.dropna()  # 删除缺失值
@@ -486,3 +485,156 @@ print("使用滞后一期的汇率的样本外R^2是:",oos)
 # 样本外R²为-0.15250615，表明模型的样本外预测能力为负
 # 说明用滞后一期汇率预测下月收益不仅毫无增量解释力，反而比简单历史均值预测更差，进一步坐实汇率变量在A股收益预测中的“噪声”本质。
 
+
+# 导入市场回报率数据
+from pandas.tseries.offsets import MonthEnd
+Market_ret = pd.read_csv('datasets/Marketret_mon_stock2024.csv')
+Market_ret['month'] = pd.to_datetime(Market_ret['month'], format='%b %Y') + MonthEnd(0)
+Market_ret.set_index('month', inplace=True)
+Market_ret.sort_index(inplace=True)
+Market_ret = Market_ret.drop(columns=['Unnamed: 0'])
+Market_ret
+
+inflation = pd.read_csv('datasets/inflation.csv')
+inflation['month'] = pd.to_datetime(inflation['month'],format='%Y/%m/%d')
+inflation.set_index('month',inplace=True)
+inflation.sort_values(by=['month'],axis=0,ascending=True)
+
+# 导入日度市场回报率数据并计算已实现波动率
+Market_ret_day = pd.read_excel('datasets/Marketret_day_stock2024.xlsx')
+Market_ret_day['Day'] = pd.to_datetime(Market_ret_day['Day'],format='%Y-%m-%d')
+Market_ret_day.set_index('Day',inplace=True)
+Market_ret_day.sort_index(inplace=True)
+
+# Calculate monthly realized variance (RV) by summing squared excess returns
+Market_variance = Market_ret_day.resample('ME').apply(lambda df: pd.Series({
+    'RV': (df['er']**2).sum(),
+    'RV1': (df['er']**2).sum() + 2*(df['er']*df['er1']).sum(),
+    'RV2': (df['er']**2).sum() + 2*(df['er']*df['er1']).sum() + 2*(df['er']*df['er2']).sum(),
+    'RV3': (df['er']**2).sum() + 2*(df['er']*df['er1']).sum() + 2*(df['er']*df['er2']).sum() + 2*(df['er']*df['er3']).sum()
+}))
+
+Market_variance['var'] = Market_ret_day.resample('ME')['er'].var()
+Market_variance.index.name = 'month'
+
+# if RV3 <0, set to RV2 if RV2 <0, set to RV1 if RV1 <0, set to RV
+Market_variance['RV1'] = Market_variance['RV1'].where(Market_variance['RV1']>=0, Market_variance['RV'])
+Market_variance['RV2'] = Market_variance['RV2'].where(Market_variance['RV2']>=0, Market_variance['RV1'])
+Market_variance['RV3'] = Market_variance['RV3'].where(Market_variance['RV3']>=0, Market_variance['RV2'])
+Market_variance
+
+# 导入价格比率数据
+price_dividend = pd.read_csv('datasets/Price_dividend_mon2024.csv')
+price_dividend['month'] = pd.date_range(start='1990-12-31', end='2024-12-31', freq='ME')
+price_dividend.set_index('month', inplace=True)
+price_dividend.sort_index(inplace=True)
+price_dividend = price_dividend.drop(columns=['Unnamed: 0'])
+
+price_earning = pd.read_csv('datasets/Price_earnings_mon2024.csv')
+price_earning['month'] = pd.date_range(start='1991-01-31', end='2024-12-31', freq='ME')
+price_earning.set_index('month', inplace=True)
+price_earning.sort_index(inplace=True)
+
+price_bookvalue = pd.read_csv('datasets/Price_bookvalue_mon2024.csv')
+price_bookvalue['month'] = pd.date_range(start='1990-12-31', end='2024-12-31', freq='ME')
+price_bookvalue.set_index('month', inplace=True)
+price_bookvalue.sort_index(inplace=True)
+price_bookvalue
+
+Turnover = pd.read_csv('datasets/Turnover_mon2024.csv')
+Turnover['month'] = pd.date_range(start='1990-12-31', periods=len(Turnover), freq='ME')
+Turnover.set_index('month', inplace=True)
+Turnover.sort_index(inplace=True)
+Turnover
+
+exchange_data = pd.read_csv('datasets/TRD_Exchange.csv')
+exchange_data['Day'] = pd.to_datetime(exchange_data['Day'], format='%Y/%m/%d')
+exchange_data = exchange_data.set_index('Day').resample('ME').last()
+exchange_data = exchange_data.rename(columns={exchange_data.columns[0]: 'Rmbusd'})  # 确保列名正确
+
+
+# 合并所有数据
+reg_data = pd.merge(Market_ret,inflation,on = 'month')
+reg_data = pd.merge(reg_data,Market_variance,on = 'month')
+reg_data = pd.merge(reg_data,price_dividend,on = 'month')
+reg_data = pd.merge(reg_data,price_earning,on = 'month')
+reg_data = pd.merge(reg_data,price_bookvalue,on = 'month')
+reg_data = pd.merge(reg_data,Turnover,on = 'month')
+reg_data = pd.merge(reg_data, exchange_data, left_index=True, right_index=True, how='left')
+
+
+
+reg_data = reg_data[['MarketR', 'rfmonth', 'ret', 'cpi', 'RV', 'RV1', 'RV2', 'RV3', 'var',
+                     'pd', 'pe', 'pb', 'to_v', 'marketret3', 'marketret6', 'marketret12',
+                     'Rmbusd']]  # 新增 'Rmbusd' 列
+reg_data
+
+# 创建滞后变量
+reg_data['lRV'] = reg_data['RV'].shift(1)
+reg_data['lRV1'] = reg_data['RV1'].shift(1)
+reg_data['lRV2'] = reg_data['RV2'].shift(1)
+reg_data['lRV3'] = reg_data['RV3'].shift(1)
+reg_data['lcpi'] = reg_data['cpi'].shift(2)
+reg_data['lpd'] = reg_data['pd'].shift(1)
+reg_data['lpe'] = reg_data['pe'].shift(1)
+reg_data['lpb'] = reg_data['pb'].shift(1)
+reg_data['lto_v'] = reg_data['to_v'].shift(1)
+reg_data['lRmbusd'] = reg_data['Rmbusd'].shift(1)  # 新增汇率滞后变量
+
+reg_data
+
+
+
+
+
+# 通用样本函数，多个变量解释
+data = reg_data['2000-01':'2024-12'].copy()
+data = data.dropna()  # 删除缺失值
+
+def out_of_sample_simple(data,y,x,initial_sample_fractions):
+    model_pre = 0
+    mean_pre = 0
+
+    initial_sample = int(len(data)*initial_sample_fractions)
+
+    # 模型
+    predictor_formula = "+".join(x)
+    formula = f'{y} ~ {predictor_formula}'
+
+    for i in range(initial_sample, len(data) - 1):
+        # 选择数据
+        data_reg = data[0:i]
+        model =smf.ols(formula, data=data_reg).fit(displ=False)
+        r_a = (model.predict(data[i:i+1][x]) - data[i:i+1][y])**2
+        r_b = (np.mean(data_reg[y]) - data[i:i+1][y])**2
+        r_a = r_a.values
+        r_b = r_b.values
+        model_pre = model_pre + r_a
+        mean_pre = mean_pre + r_b
+
+    oos = 1 - model_pre/mean_pre
+    return oos
+
+# 测试不同预测变量
+print("单变量模型:")
+print("RV3模型:", out_of_sample_simple(data,'ret',['lRV3'],0.5))
+print("CPI模型:", out_of_sample_simple(data,'ret',['lcpi'],0.5))
+print("PD模型:", out_of_sample_simple(data,'ret',['lpd'],0.5))
+print("滞后汇率模型:", out_of_sample_simple(data, 'ret', ['lRmbusd'], 0.5))  # 新增汇率单变量测试
+
+print("\n多变量模型:")
+print("RV3+CPI:", out_of_sample_simple(data,'ret',['lRV3','lcpi'],0.5))
+print("RV3+PD:", out_of_sample_simple(data,'ret',['lRV3','lpd'],0.5))
+print("RV3+滞后汇率:", out_of_sample_simple(data, 'ret', ['lRV3', 'lRmbusd'], 0.5))
+print("RV3+CPI+滞后汇率:", out_of_sample_simple(data, 'ret', ['lRV3', 'lcpi', 'lRmbusd'], 0.5))
+print("RV3+PD+滞后汇率:", out_of_sample_simple(data, 'ret', ['lRV3', 'lpd', 'lRmbusd'], 0.5))
+print("RV3+CPI+PD+滞后汇率:", out_of_sample_simple(data, 'ret', ['lRV3', 'lcpi', 'lpd', 'lRmbusd'], 0.5))
+print("RV3+CPI+PD:", out_of_sample_simple(data,'ret',['lRV3','lcpi','lpd'],0.5))
+
+#　样本外R²（OOS R²）为负，说明所有模型的预测误差都比“用历史均值”更大；数值越小，预测越差。
+#　1. RV3单变量 -8.4%仅用上期“已实现波动率”预测下月收益，误差比历史均值扩大8.4%。波动率本身是风险度量，不包含方向信息，投资者把它当“信号”反而放大了预测误差。
+#　2.CPI单变量 -2.1%用上期通胀水平预测，误差扩大2.1%。通胀属于宏观慢变量，月内已被市场充分消化，边际信息含量极低。
+#　3.PD单变量 -0.6%股息率（PD）略有价值，但仍为负。A股股息支付不稳定，且投资者更关注资本利得，导致股息率对短期收益缺乏定价能力。
+#　4.滞后汇率单变量 -0.9%汇率水平本身不携带未来收益方向信息；在“有管理的浮动+资本管制”框架下，其变动更多反映央行政策锚，而非市场边际信息，因此预测贡献为负。
+#　5.多变量组合全部更差把RV3与CPI、PD或滞后汇率任意组合，OOS R²进一步下降至-10%至-19%。说明这些变量间没有互补信息，反而叠加了噪声，使预测误差放大。最差的是“RV3+CPI+PD+滞后汇率”四变量模型，-18.8%，表明变量越多，过拟合越严重，样本外表现越差。
+#　在月频A股收益预测上，无论是单变量还是多变量组合，所有候选变量（波动率、通胀、股息率、滞后汇率）均无法提供优于“历史均值”的样本外预测力
