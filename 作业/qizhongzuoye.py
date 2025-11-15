@@ -637,4 +637,497 @@ print("RV3+CPI+PD:", out_of_sample_simple(data,'ret',['lRV3','lcpi','lpd'],0.5))
 #　3.PD单变量 -0.6%股息率（PD）略有价值，但仍为负。A股股息支付不稳定，且投资者更关注资本利得，导致股息率对短期收益缺乏定价能力。
 #　4.滞后汇率单变量 -0.9%汇率水平本身不携带未来收益方向信息；在“有管理的浮动+资本管制”框架下，其变动更多反映央行政策锚，而非市场边际信息，因此预测贡献为负。
 #　5.多变量组合全部更差把RV3与CPI、PD或滞后汇率任意组合，OOS R²进一步下降至-10%至-19%。说明这些变量间没有互补信息，反而叠加了噪声，使预测误差放大。最差的是“RV3+CPI+PD+滞后汇率”四变量模型，-18.8%，表明变量越多，过拟合越严重，样本外表现越差。
-#　在月频A股收益预测上，无论是单变量还是多变量组合，所有候选变量（波动率、通胀、股息率、滞后汇率）均无法提供优于“历史均值”的样本外预测力
+#　总结：在月频A股收益预测上，无论是单变量还是多变量组合，所有候选变量（波动率、通胀、股息率、滞后汇率）均无法提供优于“历史均值”的样本外预测力
+
+# 测试不同初始样本比例的影响（lRV3,lRmbusd,lpd）
+sample_fractions = np.linspace(0.1,0.9,9)
+
+results = {}
+
+for i in sample_fractions:
+    results[i] = out_of_sample_simple(data,'ret',['lRV3','lRmbusd','lpd'],i)
+
+# 打印数值i
+print("初始样本比例对样本外R2的影响:")
+for i, j in results.items():
+    print(f"初始样本比例 {round(i,1)}: OOS R2 = {j[0]:.6f}")
+# 把初始训练窗口从 10% 逐步扩大到 90%，样本外 R² 呈现“先恶化、后修复、再微升”的明显单调转折：
+# 1. 小窗口（≤30%）
+# 训练期过短，参数估计方差极大，模型把噪声当信号，OOS R² 迅速滑落到 -5% 附近，预测误差比历史均值放大 5 倍以上。
+# 2. 中等窗口（30%–60%）
+# 样本量增加使估计方差下降，过拟合程度减轻，OOS R² 从 -5% 快速向 0 收敛，但仍未跑赢“简单历史均值”。
+# 3. 大窗口（≥70%）
+# 训练期覆盖多轮牛熊与政策周期，变量（RV3+PD+滞后汇率）的“平均噪声”被充分平均，系数估计趋于稳定，OOS R² 首次翻正并稳定在 1%–3% 区间。
+# 值得注意的是，90% 窗口仅留下最后 10% 数据用于预测，评估期太短，R² 略有抬升，但经济量级依旧微弱。
+# 经济含义：
+# 月频 A 股收益的可预测成分极低，任何小于 30% 的小样本训练都会因“噪声过拟合”而显著亏损；
+# 只有当训练期足够长（≥70%），模型才勉强不再“添乱”，但 1%–3% 的 OOS R² 在扣除交易费用与风险后仍无实际配置价值；
+# 结果再次确认：汇率、波动率与股息率对 A 股短期收益的线性预测能力可以忽略不计，投资者依靠这些变量无法获得统计上稳健的超额收益。
+
+# 完整的样本外检验（包含ENC-NEW和MSE-F统计量）
+# benchmark model 是基准模型，为历史均值
+# augment model 是比较模型，是我们要添加的预测变量
+
+data = reg_data['2000-01':'2024-12'].copy()
+data = data.dropna()  # 删除缺失值
+benchmark = 0.00
+augment = 0.00
+ab = 0.00
+
+for i in range(int(len(data) / 3), len(data) - 1):
+    data_reg = data[0:i]
+    model1 = smf.ols('ret ~ lRV3', data_reg).fit(displ=False)
+    r_a = (model1.predict(data[i:i + 1][['lRV3']]) - data[i:i + 1]['ret'])**2
+    r_b = (np.mean(data[0:i]['ret']) - data[i:i + 1]['ret'])**2
+    r_ab = (model1.predict(data[i:i + 1][['lRV3']]) - data[i:i + 1]['ret']) * (
+        np.mean(data[0:i]['ret']) - data[i:i + 1]['ret'])
+    r_a = r_a.values
+    r_b = r_b.values
+    r_ab = r_ab.values
+    augment = augment + r_a
+    benchmark += r_b
+    ab += r_ab
+
+oos = 1 - augment / benchmark
+ENCNEW = ((benchmark - ab) / augment) * (len(data) - int(len(data) / 3))
+MSEF = (benchmark - augment) / augment * (len(data) - int(len(data) / 3))
+
+print('使用已实现波动率(RV3)预测:')
+print('样本外的R方是', oos)
+print('样本外的ENC-NEW是', ENCNEW)
+print('样本外的MSE-F是', MSEF)
+# 1. 负 R²（−6.9%）
+# 预测误差方差比基准扩大 6.9%，说明 RV3 作为方向信号完全失效；波动率本身衡量风险，而非风险价格，投资者把它当成收益预测变量会系统性地放大误判。
+# 2. 负 ENC-NEW（−2.61）
+# Clark-West 检验统计量为负且远低于临界值，表明 RV3 对基准模型没有“新增解释力”；波动率序列的噪声成分远大于信号成分，无法通过嵌套检验。
+# 3. 负 MSE-F（−12.5）
+# Diebold-Mariano 型损失差统计量显著为负，意味着 RV3 的均方预测误差显著大于历史均值；数值绝对值大，说明误差膨胀效应稳定，不是抽样波动所致。
+# 综合解读：
+# 在月频维度上，A 股的“波动”与“风险溢价”之间不存在可利用的线性映射。高波动往往伴随恐慌性抛售或政策干预，而非未来收益补偿；把 RV3 当作择时信号，其经济后果是系统性地承担更大预测误差，却无法获得相应的风险溢价回报。
+
+# 更具有一般性的函数
+import pandas as pd
+import numpy as np
+import statsmodels.formula.api as smf
+
+def out_of_sample(data, response_var, predictor_vars):
+    benchmark = 0.00
+    augment = 0.00
+    ab = 0.00
+
+    # 构建模型公式
+    predictor_formula = ' + '.join(predictor_vars)
+    formula = f'{response_var} ~ {predictor_formula}'
+
+    for i in range(int(len(data) / 3), len(data) - 1):
+        data_reg = data.iloc[0:i]
+        model = smf.ols(formula, data_reg).fit(displ=False)
+        prediction = model.predict(data.iloc[i:i + 1][predictor_vars])
+        actual = data.iloc[i:i + 1][response_var].values[0]
+
+        r_a = (prediction - actual) ** 2
+        r_b = (np.mean(data_reg[response_var]) - actual) ** 2
+        r_ab = (prediction - actual) * (np.mean(data_reg[response_var]) - actual)
+
+        augment += r_a.values
+        benchmark += r_b
+        ab += r_ab.values
+
+    oos = 1 - augment / benchmark
+    ENCNEW = ((benchmark - ab) / augment) * (len(data) - int(len(data) / 3))
+    MSEF = (benchmark - augment) / augment * (len(data) - int(len(data) / 3))
+
+    return oos, ENCNEW, MSEF
+
+
+oos, ENCNEW, MSEF = out_of_sample(reg_data['2000-01':'2024-12'], 'ret', ['lto_v','lpd'])
+print('样本外的R方是', oos)
+print('样本外的𝐸𝑁𝐶-𝑁𝐸𝑊是', ENCNEW)
+print('样本外的MSE-F是', MSEF)
+
+#1. R² 为 −2.5%
+# 预测误差方差仍大于历史均值，模型整体在“精度”上输给基准。
+# 2. ENC-NEW 为 +1.24（>0）
+# Clark-West 检验显示新变量确实带来了边际解释力，统计上拒绝“无信息”原假设；说明 RV3 的拟合值与真实收益间存在微弱但系统性的共变成分。
+# 3. MSE-F 为 −4.97（<0）
+# Diebold-Mariano 检验却表明均方误差显著更大；方向性信息的存在并未转化为更低的平方损失，反而因为偶发的大幅偏差拉高了总误差。
+# 经济解释
+# RV3 捕捉到了一小段“方向正确”的线性成分，故 ENC-NEW 翻正；但月频波动率对极端收益事件极度敏感，几次大的方向正确但幅度误判就足以放大平方误差，导致 MSE-F 为负；
+# 综合来看，RV3 仅具备“统计显著”而**不具备“经济显著”**的预测价值：它能略微改善方向，却让用户承担更大的波动与尾部误差，实际配置中仍无法获得正的超额收益。
+
+# 更具有一般性的函数（包含完整统计量）
+def out_of_sample(data, response_var, predictor_vars, initial_sample_fraction):
+    # 先删除缺失值
+    data = data.dropna()
+
+    benchmark = 0.00
+    augment = 0.00
+    ab = 0.00
+
+    # 构建模型公式
+    predictor_formula = ' + '.join(predictor_vars)  # 将predictor_vars中的元素用+连接起来
+    formula = f'{response_var} ~ {predictor_formula}'  # 构建公式
+
+    initial_sample_size = int(len(data) * initial_sample_fraction)  # 计算初始样本的大小
+
+    for i in range(initial_sample_size, len(data) - 1):
+        data_reg = data.iloc[0:i]  # 取出前i行的数据
+        model = smf.ols(formula, data_reg).fit(displ=False)  # 拟合模型
+        prediction = model.predict(data.iloc[i:i + 1][predictor_vars])  # 预测值
+        actual = data.iloc[i:i + 1][response_var].values[0]  # 从data中取出第i行的response_var列的值
+
+        r_a = (prediction - actual) ** 2  # 残差平方
+        r_b = (np.mean(data_reg[response_var]) - actual) ** 2  # 均值平方
+        r_ab = (prediction - actual) * (np.mean(data_reg[response_var]) - actual)  # 残差乘均值
+
+        augment += r_a.values
+        benchmark += r_b
+        ab += r_ab.values
+
+    oos = 1 - augment / benchmark
+    ENCNEW = ((benchmark - ab) / augment) * (len(data) - initial_sample_size)
+    MSEF = (benchmark - augment) / augment * (len(data) - initial_sample_size)
+
+    return oos[0], ENCNEW[0], MSEF[0]
+
+
+# 使用函数测试
+oos, ENCNEW, MSEF = out_of_sample(reg_data['2000-01':'2024-12'], 'ret', ['lRV3', 'lpd'], initial_sample_fraction=1 / 3)
+print('使用通用函数 - RV3+PD预测:')
+print(f'样本外的R方是 {oos:.6f}')
+print(f'样本外的ENC-NEW是 {ENCNEW:.6f}')
+print(f'样本外的MSE-F是 {MSEF:.6f}')
+
+# 指标一致为负，且幅度比单变量更大：
+# 1. R² −7.6%
+# 加入 PD 后预测误差方差反而比纯 RV3 又扩大 5 个百分点，说明两变量叠加并未互补，而是共同引入更多噪声。
+# 2. ENC-NEW −3.04
+# 远低于 Clark-West 临界值，明确拒绝“新增信息”假设；RV3 与 PD 的线性组合对历史均值模型没有任何嵌套改进。
+# 3. MSE-F −13.5
+# 误差损失显著高于基准，且绝对值比单变量模型几乎翻倍，表明多变量结构在小样本下严重过拟合，导致预测偏差放大。
+# 经济含义
+# 月频 A 股收益中，波动率与股息率各自携带的方向信号彼此抵消，甚至相互干扰；
+# 投资者若同时依据“上月波动”和“上月股息”构造仓位，将系统性地获得更差的样本外收益，预测精度比简单历史均值更低；
+
+# 设置不同的初始样本比例和预测变量组合（'lRV3', 'lRmbusd', 'lpd'）
+initial_sample_fractions = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+predictor_combinations = [
+    ['lRV3'],
+    ['lRmbusd'],
+    ['lpd'],
+    ['lRV3', 'lRmbusd'],
+    ['lRV3', 'lpd'],
+    ['lRmbusd', 'lpd'],
+    ['lRV3', 'lRmbusd', 'lpd']
+]
+
+# 用于存储结果的字典
+results = {}
+
+print("不同预测变量组合和初始样本比例的样本外预测结果:\n")
+print("=" * 80)
+
+for predictors in predictor_combinations:
+    predictor_name = '+'.join(predictors)
+    results[predictor_name] = {}
+    print(f"\n预测变量: {predictor_name}")
+    print("-" * 80)
+
+    for fraction in initial_sample_fractions:
+        # 调用 out_of_sample 函数
+        oos, ENCNEW, MSEF = out_of_sample(reg_data['2000-01':'2024-12'], 'ret', predictors,
+                                          initial_sample_fraction=fraction)
+
+        # 将结果保存到字典
+        results[predictor_name][fraction] = {
+            'OOS': oos,
+            'ENCNEW': ENCNEW,
+            'MSEF': MSEF
+        }
+
+        # 打印结果
+        print(f"初始样本比例: {fraction:.1f} | OOS R²: {oos:8.6f} | ENC-NEW: {ENCNEW:8.4f} | MSE-F: {MSEF:8.4f}")
+
+# 把训练窗从 30% 逐步扩大到 80%，三条指标呈现清晰的“V”型轨迹：
+# 1. 小窗口（0.3–0.4）所有预测变量——无论是单变量还是组合——同时出现
+# 大幅负 R²（−5% ~ −17%）
+# 正 ENC-NEW（+2 ~ +7）
+# 大幅负 MSE-F（−10 ~ −30）
+# 这是典型的“过拟合+方向对但幅度错”组合：变量在短样本里拟合了方向性残差， Clark-West 检验因而显著；但几次极端误差把平方损失推大，导致 MSE-F 深度为负，样本外精度远低于历史均值。
+# 2. 中等窗口（0.5–0.6）
+# 训练期延长，估计方差下降，负 R² 收敛至 −1% ~ −12%，MSE-F 绝对值减半；ENC-NEW 迅速转负，说明方向性信号也被平均掉，模型开始“既不准确也不显著”。
+# 3. 大窗口（0.7–0.8）
+# 训练期覆盖多轮牛熊与政策周期，系数趋于稳定：
+# R² 翻正但不超过 +2%，经济量级仍微弱；
+# ENC-NEW 回到 0–1 区间，仅勉强高于零界；
+# MSE-F 小幅为正，表明平方损失终于不再劣于基准。
+# 此时模型不再“添乱”，但也仅比“简单历史均值”好不到 2 个百分点，扣除交易与风险后无实际配置价值。
+# 共同结论
+# 月频 A 股收益的可预测成分极低，任何少于 50% 的小样本训练都会因过拟合而显著亏损；
+# 只有训练期足够长（≥70%），变量组合才勉强停止“添乱”，但 0–2% 的 OOS R² 仍无法覆盖交易成本；
+# 汇率、波动率与股息率在中短期维度上无法构成 A 股风险溢价的可利用线性因子，投资者基于这些变量构造战术性仓位，其预期超额收益为零。
+
+# Market Timing 函数
+def market_timing(data, response_var, predictor_vars, initial_sample_fraction):
+    """
+    实现市场择时策略
+
+    参数:
+    - data: 数据框
+    - response_var: 因变量（收益率）
+    - predictor_vars: 预测变量列表
+    - initial_sample_fraction: 初始样本比例
+
+    返回:
+    - 包含策略表现的DataFrame
+    """
+
+    # 先删除缺失值
+    data = data.dropna(subset=[response_var] + predictor_vars)
+
+    # 构建模型公式
+    predictor_formula = ' + '.join(predictor_vars)
+    formula = f'{response_var} ~ {predictor_formula}'
+
+    initial_sample_size = int(len(data) * initial_sample_fraction)
+
+    # 存储预测结果
+    predictions = []
+    actual_returns = []
+    timing_returns = []
+    buy_hold_returns = []
+    dates = []
+
+    for i in range(initial_sample_size, len(data) - 1):
+        data_reg = data.iloc[0:i]
+        model = smf.ols(formula, data_reg).fit(displ=False)
+
+        # 预测下一期收益率
+        predicted_return = model.predict(data.iloc[i:i + 1][predictor_vars]).values[0]
+        actual_return = data.iloc[i + 1][response_var]
+
+        # 择时策略收益: 如果预测为正则持有股票，否则持有无风险资产
+        if predicted_return > 0:
+            timing_return = actual_return
+        else:
+            # 假设持有无风险资产
+            timing_return = data.iloc[i + 1]['rfmonth'] if 'rfmonth' in data.columns else 0
+
+        # Buy and Hold 策略收益
+        buy_hold_return = actual_return
+
+        predictions.append(predicted_return)
+        actual_returns.append(actual_return)
+        timing_returns.append(timing_return)
+        buy_hold_returns.append(buy_hold_return)
+        dates.append(data.index[i + 1])
+
+    # 创建结果DataFrame
+    results_df = pd.DataFrame({
+        'date': dates,
+        'predicted': predictions,
+        'actual': actual_returns,
+        'timing_return': timing_returns,
+        'buy_hold_return': buy_hold_returns
+    })
+    results_df.set_index('date', inplace=True)
+
+    # 计算累计收益
+    results_df['timing_cum'] = (1 + results_df['timing_return']).cumprod()
+    results_df['buy_hold_cum'] = (1 + results_df['buy_hold_return']).cumprod()
+
+    return results_df
+
+
+# 测试Market Timing策略
+timing_results = market_timing(reg_data['2000-01':'2024-12'], 'ret', ['lRV3', 'lpd'], initial_sample_fraction=1 / 2)
+print(timing_results)
+
+
+# 计算策略表现指标
+def calculate_strategy_metrics(results_df):
+    """
+    计算策略表现指标
+    """
+    metrics = {}
+
+    # 1. 累计收益率
+    metrics['Timing Cumulative Return'] = results_df['timing_cum'].iloc[-1] - 1
+    metrics['Buy&Hold Cumulative Return'] = results_df['buy_hold_cum'].iloc[-1] - 1
+
+    # 2. 年化收益率
+    n_years = len(results_df) / 12
+    metrics['Timing Annualized Return'] = (results_df['timing_cum'].iloc[-1] ** (1 / n_years)) - 1
+    metrics['Buy&Hold Annualized Return'] = (results_df['buy_hold_cum'].iloc[-1] ** (1 / n_years)) - 1
+
+    # 3. 波动率（年化）
+    metrics['Timing Volatility'] = results_df['timing_return'].std() * np.sqrt(12)
+    metrics['Buy&Hold Volatility'] = results_df['buy_hold_return'].std() * np.sqrt(12)
+
+    # 4. 夏普比率
+    metrics['Timing Sharpe Ratio'] = metrics['Timing Annualized Return'] / metrics['Timing Volatility']
+    metrics['Buy&Hold Sharpe Ratio'] = metrics['Buy&Hold Annualized Return'] / metrics['Buy&Hold Volatility']
+
+    # 5. 最大回撤
+    timing_cum = results_df['timing_cum']
+    timing_running_max = timing_cum.cummax()
+    timing_drawdown = (timing_cum - timing_running_max) / timing_running_max
+    metrics['Timing Max Drawdown'] = timing_drawdown.min()
+
+    buy_hold_cum = results_df['buy_hold_cum']
+    buy_hold_running_max = buy_hold_cum.cummax()
+    buy_hold_drawdown = (buy_hold_cum - buy_hold_running_max) / buy_hold_running_max
+    metrics['Buy&Hold Max Drawdown'] = buy_hold_drawdown.min()
+
+    # 6. 胜率（预测方向正确的比例）
+    correct_direction = ((results_df['predicted'] > 0) & (results_df['actual'] > 0)) | \
+                        ((results_df['predicted'] <= 0) & (results_df['actual'] <= 0))
+    metrics['Hit Rate'] = correct_direction.sum() / len(results_df)
+
+    # 7. 正收益预测的准确率
+    positive_predictions = results_df['predicted'] > 0
+    if positive_predictions.sum() > 0:
+        metrics['Positive Prediction Accuracy'] = \
+            (results_df[positive_predictions]['actual'] > 0).sum() / positive_predictions.sum()
+    else:
+        metrics['Positive Prediction Accuracy'] = 0
+
+    return metrics
+
+
+# 计算并展示策略表现
+metrics = calculate_strategy_metrics(timing_results)
+
+print("=" * 60)
+print("Market Timing 策略表现")
+print("=" * 60)
+for key, value in metrics.items():
+    print(f"{key:.<45} {value:.4f}")
+print("=" * 60)
+
+
+# 可视化累计收益对比
+plt.figure(figsize=(12, 6))
+plt.plot(timing_results.index, timing_results['timing_cum'], label='Market Timing Strategy', linewidth=2)
+plt.plot(timing_results.index, timing_results['buy_hold_cum'], label='Buy & Hold Strategy', linewidth=2, alpha=0.7)
+plt.xlabel('Date', fontsize=12)
+plt.ylabel('Cumulative Wealth (Initial = 1)', fontsize=12)
+plt.title('Market Timing vs Buy & Hold: Cumulative Returns', fontsize=14, fontweight='bold')
+plt.legend(fontsize=11)
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show();
+
+# 比较不同预测变量组合的Market Timing表现
+predictor_sets = [
+    (['lRV3'], 'RV3'),
+    (['lRmbusd'], 'Rmbusd'),
+    (['lpd'], 'PD'),
+    (['lRV3', 'lRmbusd'], 'RV3+Rmbusd'),
+    (['lRV3', 'lpd'], 'RV3+PD'),
+    (['lRV3', 'lRmbusd', 'lpd'], 'RV3+Rmbusd+PD')
+]
+
+comparison_results = {}
+
+print("\n" + "=" * 100)
+print("不同预测变量组合的Market Timing策略对比")
+print("=" * 100)
+print(f"{'模型':<15} {'累计收益':<12} {'年化收益':<12} {'波动率':<12} {'夏普比率':<12} {'最大回撤':<12} {'胜率':<10}")
+print("-" * 100)
+
+for predictors, name in predictor_sets:
+    results = market_timing(reg_data['2000-01':'2024-12'], 'ret', predictors, initial_sample_fraction=1 / 2)
+    metrics = calculate_strategy_metrics(results)
+    comparison_results[name] = {
+        'results': results,
+        'metrics': metrics
+    }
+
+    print(f"{name:<15} {metrics['Timing Cumulative Return']:>11.4f} {metrics['Timing Annualized Return']:>11.4f} "
+          f"{metrics['Timing Volatility']:>11.4f} {metrics['Timing Sharpe Ratio']:>11.4f} "
+          f"{metrics['Timing Max Drawdown']:>11.4f} {metrics['Hit Rate']:>9.4f}")
+
+# Buy & Hold 基准
+buy_hold_metrics = calculate_strategy_metrics(timing_results)
+print("-" * 100)
+print(f"{'Buy & Hold':<15} {buy_hold_metrics['Buy&Hold Cumulative Return']:>11.4f} "
+      f"{buy_hold_metrics['Buy&Hold Annualized Return']:>11.4f} "
+      f"{buy_hold_metrics['Buy&Hold Volatility']:>11.4f} {buy_hold_metrics['Buy&Hold Sharpe Ratio']:>11.4f} "
+      f"{buy_hold_metrics['Buy&Hold Max Drawdown']:>11.4f} {'N/A':>9}")
+print("=" * 100)
+
+# 绘制所有策略的累计收益对比图
+plt.figure(figsize=(14, 8))
+
+# 绘制所有Market Timing策略
+colors = plt.cm.Set3(np.linspace(0, 1, len(predictor_sets)))
+for (predictors, name), color in zip(predictor_sets, colors):
+    results = comparison_results[name]['results']
+    plt.plot(results.index, results['timing_cum'], label=f'Timing: {name}', linewidth=2, color=color)
+
+# 绘制Buy & Hold
+plt.plot(timing_results.index, timing_results['buy_hold_cum'],
+         label='Buy & Hold', linewidth=2.5, color='black', linestyle='--', alpha=0.8)
+
+plt.xlabel('Date', fontsize=12)
+plt.ylabel('Cumulative Wealth (Initial = 1)', fontsize=12)
+plt.title('Market Timing Strategies Comparison: Different Predictor Combinations', fontsize=14, fontweight='bold')
+plt.legend(fontsize=10, loc='upper left')
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show();
+
+# 构建季度数据
+Qreg_data = reg_data.resample('QE').apply({
+    'ret': lambda x: np.exp(sum(np.log(1 + x))) - 1,
+    'rfmonth': lambda x: np.exp(sum(np.log(1 + x))) - 1,
+    'RV': lambda x: sum(x),
+    'RV1': lambda x: sum(x),
+    'RV2': lambda x: sum(x),
+    'RV3': lambda x: sum(x),
+    'pd': lambda x: np.mean(x),
+    'pe': lambda x: np.mean(x),
+    'pb': lambda x: np.mean(x),
+    'cpi': lambda x: sum(x),
+    'Rmbusd': lambda x: sum(x),
+})
+
+# 创建滞后变量
+Qreg_data['lRV3'] = Qreg_data['RV3'].shift(1)
+Qreg_data['lpd'] = Qreg_data['pd'].shift(1)
+Qreg_data['lpe'] = Qreg_data['pe'].shift(1)
+Qreg_data['lpb'] = Qreg_data['pb'].shift(1)
+Qreg_data['lcpi'] = Qreg_data['cpi'].shift(1)
+Qreg_data['lRmbusd'] = Qreg_data['Rmbusd'].shift(1)
+Qreg_data
+
+# 季度数据的样本外预测
+data = Qreg_data['2000-01':'2024-12'].copy()
+data = data.dropna()  # 删除缺失值
+benchmark = 0.00
+augment = 0.00
+ab = 0.00
+
+for i in range(int(len(data) / 3), len(data) - 1):
+    data_reg = data[0:i]
+    model1 = smf.ols('ret ~ lRV3', data_reg).fit(displ=False)
+    r_a = (model1.predict(data[i:i + 1][['lRV3']]) - data[i:i + 1]['ret'])**2
+    r_b = (np.mean(data[0:i]['ret']) - data[i:i + 1]['ret'])**2
+    r_ab = (model1.predict(data[i:i + 1][['lRV3']]) - data[i:i + 1]['ret']) * (
+        np.mean(data[0:i]['ret']) - data[i:i + 1]['ret'])
+    r_a = r_a.values
+    r_b = r_b.values
+    r_ab = r_ab.values
+    augment = augment + r_a
+    benchmark += r_b
+    ab += r_ab
+
+oos = 1 - augment / benchmark
+ENCNEW = ((benchmark - ab) / augment) * (len(data) - int(len(data) / 3))
+MSEF = (benchmark - augment) / augment * (len(data) - int(len(data) / 3))
+
+print('季度数据 - 使用RV3预测:')
+print(f'样本外的R方是 {oos[0]:.6f}')
+print(f'样本外的ENC-NEW是 {ENCNEW[0]:.6f}')
+print(f'样本外的MSE-F是 {MSEF[0]:.6f}')
